@@ -69,13 +69,36 @@ class ClientConnection(threading.Thread):
 	def cancel(self):
 		self.stop_running = True
 	
+	def send(self, message):
+		frame = chr(0b10000001)
+		
+		length = len(message)
+		if length <= 125:
+			frame += struct.pack('>B', length)
+		elif length <= 2**16:
+			frame += struct.pack('>B', 126)
+			frame += struct.pack('>H', length)
+		else:
+			frame += struct.pack('>B', 127)
+			frame += struct.pack('>L', length)
+		
+		frame += message
+		print "sending frame: %s" % frame
+		self.socket.send(frame)
+			
+	
 	def processFrame(self, frame_info):
 		print "frame length: %d" % len(frame_info)
 		print "frame from %s: %s" % (self.id, frame_info)
 		print "FIN is: %d" % bit(frame_info[0], 7)
 		print "MASK is: %d" % bit(frame_info[1], 7)
-		print "opcode is: %d" % bits(frame_info[0], 0, 3)
+		opcode = bits(frame_info[0], 0, 3)
+		print "opcode is: %d" % opcode
 		payload_length = bits(frame_info[1], 0, 6)
+		
+		if opcode == 8:
+			self.socket.close()
+			return
 		
 		if payload_length == 126:
 			payload_length = struct.unpack('>H', self.socket.recv(2))
@@ -93,7 +116,7 @@ class ClientConnection(threading.Thread):
 		message = "".join(message)
 		
 		print "message received: %s" % message
-		self.socket.close()		
+		self.send("This is a response!")	
 	
 	def run(self):
 		self.handshake()
