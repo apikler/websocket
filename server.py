@@ -3,6 +3,7 @@ import hashlib
 import re
 import socket
 import threading
+import struct
 
 MAGIC_STRING = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 RESPONSE_HEADERS = (
@@ -11,6 +12,23 @@ RESPONSE_HEADERS = (
 	"Connection: Upgrade",
 	"Sec-WebSocket-Accept: %s",
 )
+
+def stringToBits(string):
+	bits = 0
+	for char in string:
+		bits << 8
+		bits += ord(char)
+	return bits
+
+def bit(string, index):
+	data = stringToBits(string) 
+	return (data & (1 << index)) >> index
+
+def bits(string, start, end):
+	data = stringToBits(string)
+	diff = end - start + 1
+	mask = ((1 << diff) - 1) << start
+	return (data & mask) >> start
 
 class ClientConnection(threading.Thread):
 	def __init__(self, socket, address):
@@ -51,6 +69,13 @@ class ClientConnection(threading.Thread):
 	def cancel(self):
 		self.stop_running = True
 	
+	def processFrame(self, frame):
+		print "frame from %s: %s" % (self.id, frame)
+		print "FIN is: %d" % bit(frame[0], 7)
+		print "MASK is: %d" % bit(frame[1], 7)
+		print "opcode is: %d" % bits(frame[0], 0, 3)
+		print "payload len is: %d" % bits(frame[1], 0, 6)
+	
 	def run(self):
 		self.handshake()
 		
@@ -61,11 +86,12 @@ class ClientConnection(threading.Thread):
 				continue
 			
 			if len(message):
-				print "message from %s: %s" % (self.id, message)
+				self.processFrame(message)
+				
 			else:
 				break
 				
-		print "exiting connection thread"
+		print "exiting connection thread for %s" % self.id
 
 if __name__ == "__main__":
 	serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
