@@ -69,25 +69,45 @@ class ClientConnection(threading.Thread):
 	def cancel(self):
 		self.stop_running = True
 	
-	def processFrame(self, frame):
-		print "frame from %s: %s" % (self.id, frame)
-		print "FIN is: %d" % bit(frame[0], 7)
-		print "MASK is: %d" % bit(frame[1], 7)
-		print "opcode is: %d" % bits(frame[0], 0, 3)
-		print "payload len is: %d" % bits(frame[1], 0, 6)
+	def processFrame(self, frame_info):
+		print "frame length: %d" % len(frame_info)
+		print "frame from %s: %s" % (self.id, frame_info)
+		print "FIN is: %d" % bit(frame_info[0], 7)
+		print "MASK is: %d" % bit(frame_info[1], 7)
+		print "opcode is: %d" % bits(frame_info[0], 0, 3)
+		payload_length = bits(frame_info[1], 0, 6)
+		
+		if payload_length == 126:
+			payload_length = struct.unpack('>H', self.socket.recv(2))
+		elif payload_length == 127:
+			payload_length = struct.unpack('>L', self.socket.recv(8))
+		
+		print "payload len is: %d" % payload_length
+		
+		mask = self.socket.recv(4)
+		print "mask is: %s" % mask
+		encoded = self.socket.recv(payload_length)
+		message = []
+		for i, char in enumerate(encoded):
+			message.append(chr(ord(char) ^ ord(mask[i % 4])))
+		message = "".join(message)
+		
+		print "message received: %s" % message
+		self.socket.close()		
 	
 	def run(self):
 		self.handshake()
 		
 		while not self.stop_running:
 			try:
-				message = self.socket.recv(2**14)
+				message = self.socket.recv(2)
 			except socket.timeout:
 				continue
+			except:
+				break
 			
 			if len(message):
 				self.processFrame(message)
-				
 			else:
 				break
 				
