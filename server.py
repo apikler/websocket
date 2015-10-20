@@ -4,6 +4,7 @@ import re
 import socket
 import threading
 import struct
+import Queue
 
 MAGIC_STRING = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 RESPONSE_HEADERS = (
@@ -12,6 +13,8 @@ RESPONSE_HEADERS = (
 	"Connection: Upgrade",
 	"Sec-WebSocket-Accept: %s",
 )
+TIMEOUT = 1.0
+PORT = 8888
 
 def stringToBits(string):
 	bits = 0
@@ -30,18 +33,98 @@ def bits(string, start, end):
 	mask = ((1 << diff) - 1) << start
 	return (data & mask) >> start
 
-class ClientConnection(threading.Thread):
-	def __init__(self, socket, address):
+class ConnectionGroup:
+	def __init__(self, reader, writer):
+		self.reader = reader
+		self.writer = writer
+	
+	def cancel(self):
+		self.reader.cancel()
+		self.writer.cancel()
+	
+	def start(self):
+		self.reader.start()
+		self.writer.start()
+
+class ConnectionThread(threading.Thread):
+	def __init__(self, socket, address, port, groups):
 		self.socket = socket
-		self.address = address[0]
-		self.port = address[1]
-		self.id = "%s|%s" % (self.address, self.port)
+		self.groups = groups
+		self.address = address
+		self.port = int(port)
+		self.id = "%s:%s" % (self.address, self.port)
 		self.stop_running = False
 		
-		socket.settimeout(1.0)
+		socket.settimeout(TIMEOUT)
 		
 		threading.Thread.__init__(self)
 	
+	def cancel(self):
+		self.stop_running = True
+	
+	def shutdown(self):
+		self.group.cancel()
+		if port in self.groups: del self.groups[port]
+		self.socket.close()
+
+class Writer(ConnectionThread):
+	def __init__(self, socket, address, port, groups):
+		self.queue = Queue.Queue()
+		
+		ConnectionThread.__init__(self, socket, address, port, groups)
+	
+	def send(self, message):
+		self.queue.put({'mode': 'frame', 'text': message})
+	
+	def sendRaw(self, message):
+		self.queue.put({'mode': 'raw', 'text': message})
+	
+	def _sendFrame(self, message):
+		frame = chr(0b10000001)
+		
+		length = len(message)
+		if length <= 125:
+			frame += struct.pack('>B', length)
+		elif length <= 2**16:
+			frame += struct.pack('>B', 126)
+			frame += struct.pack('>H', length)
+		else:
+			frame += struct.pack('>B', 127)
+			frame += struct.pack('>L', length)
+		
+		frame += message
+		print "sending message: %s" % message
+		bytes_sent = 0
+		try:
+			bytes_sent = self.socket.send(frame)
+		except:
+			print "Error sending message: %s" % message
+		return bytes_sent
+	
+	def run(self):
+		self.group = self.groups[port]
+		while not self.stop_running:
+			try:
+				message = self.queue.get(True, TIMEOUT)
+			except Queue.Empty:
+				continue
+			except:
+				break
+			
+			if message['mode'] == 'frame':
+				sent_bytes = self._sendFrame(message['text'])
+				if sent_bytes == 0: break
+			else:
+				try:
+					self.socket.send(message['text'])
+				except:
+					print "Error sending raw message: %s" % message['text']
+					break
+		
+		self.shutdown()
+		print "Exiting writer thread for %s" % self.id
+
+class Reader(ConnectionThread):	
 	def parseWebsocketKey(self, request):
 		match = re.search(r"Sec-WebSocket-Key: (.*)\r\n", request)
 		if match:
@@ -64,36 +147,15 @@ class ClientConnection(threading.Thread):
 		print "received: \n" + request
 		response = self.handshakeResponse(request)
 		print "response: \n" + response
-		self.socket.send(response)
-	
-	def cancel(self):
-		self.stop_running = True
-	
-	def send(self, message):
-		frame = chr(0b10000001)
-		
-		length = len(message)
-		if length <= 125:
-			frame += struct.pack('>B', length)
-		elif length <= 2**16:
-			frame += struct.pack('>B', 126)
-			frame += struct.pack('>H', length)
-		else:
-			frame += struct.pack('>B', 127)
-			frame += struct.pack('>L', length)
-		
-		frame += message
-		print "sending frame: %s" % frame
-		self.socket.send(frame)
-			
+		self.group.writer.sendRaw(response)
 	
 	def processFrame(self, frame_info):
-		print "frame length: %d" % len(frame_info)
-		print "frame from %s: %s" % (self.id, frame_info)
-		print "FIN is: %d" % bit(frame_info[0], 7)
-		print "MASK is: %d" % bit(frame_info[1], 7)
+		#print "frame length: %d" % len(frame_info)
+		#print "frame from %s: %s" % (self.id, frame_info)
+		#print "FIN is: %d" % bit(frame_info[0], 7)
+		#print "MASK is: %d" % bit(frame_info[1], 7)
 		opcode = bits(frame_info[0], 0, 3)
-		print "opcode is: %d" % opcode
+		# print "opcode is: %d" % opcode
 		payload_length = bits(frame_info[1], 0, 6)
 		
 		if opcode == 8:
@@ -105,10 +167,10 @@ class ClientConnection(threading.Thread):
 		elif payload_length == 127:
 			payload_length = struct.unpack('>L', self.socket.recv(8))
 		
-		print "payload len is: %d" % payload_length
+		# print "payload len is: %d" % payload_length
 		
 		mask = self.socket.recv(4)
-		print "mask is: %s" % mask
+		# print "mask is: %s" % mask
 		encoded = self.socket.recv(payload_length)
 		message = []
 		for i, char in enumerate(encoded):
@@ -116,9 +178,12 @@ class ClientConnection(threading.Thread):
 		message = "".join(message)
 		
 		print "message received: %s" % message
-		self.send("This is a response!")	
+		self.counter += 1
+		self.group.writer.send("This is response %d on port %d!" % (self.counter, self.port))	
 	
 	def run(self):
+		self.counter = 0
+		self.group = self.groups[port]
 		self.handshake()
 		
 		while not self.stop_running:
@@ -133,29 +198,32 @@ class ClientConnection(threading.Thread):
 				self.processFrame(message)
 			else:
 				break
-				
-		print "exiting connection thread for %s" % self.id
+		
+		self.shutdown()
+		print "Exiting reader thread for %s" % self.id
 
 if __name__ == "__main__":
 	serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 	serversocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-	serversocket.bind(('', 8888))
+	serversocket.bind(('', PORT))
 	serversocket.listen(5)
+	print "listening on port %d..." % PORT
 
-	connections = {}
+	groups = {}	 # map of port => ConnectionGroup
 	try:
 		while True:
-			print "listening..."
-
 			(clientsocket, address) = serversocket.accept()
-
-			print "Accepted connection from: " + str(address)
-			connection = ClientConnection(clientsocket, address)
-			connections["%s|%s" % (address[0], address[1])] = connection
-			connection.start()
+			(address, port) = address
+			print "Accepted connection from: %s:%s" % (address, port)
+			
+			reader = Reader(clientsocket, address, port, groups)
+			writer = Writer(clientsocket, address, port, groups)
+			group = ConnectionGroup(reader, writer)
+			groups[port] = group
+			group.start()
 	except KeyboardInterrupt:
 		pass
 		
-	for c in connections.values(): c.cancel()
+	for group in groups.values(): group.cancel()
     
