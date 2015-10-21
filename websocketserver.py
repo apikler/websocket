@@ -14,7 +14,6 @@ RESPONSE_HEADERS = (
 	"Sec-WebSocket-Accept: %s",
 )
 TIMEOUT = 1.0
-PORT = 8888
 
 def stringToBits(string):
 	bits = 0
@@ -32,6 +31,34 @@ def bits(string, start, end):
 	diff = end - start + 1
 	mask = ((1 << diff) - 1) << start
 	return (data & mask) >> start
+
+class Server:
+	def __init__(self, port, groups):
+		self.GROUPS = groups
+	
+	def onConnect(self, address, port):
+		pass
+	
+	def onClose(self, address, port):
+		pass
+	
+	def onMessage(self, message, address, port):
+		pass
+	
+	def close(self, port):
+		self.GROUPS[port].cancel()
+	
+	def send(self, message, port):
+		self.GROUPS[port].writer.send(message)
+	
+	def sendToAll(self, message):
+		for group in self.GROUPS:
+			group.writer.send(message)
+	
+	def sendToOthers(self, message, port):
+		for other_port in self.GROUPS.keys():
+			if other_port != port:
+				self.GROUPS[other_port].writer.send(message)
 
 class ConnectionGroup:
 	def __init__(self, reader, writer):
@@ -64,7 +91,7 @@ class ConnectionThread(threading.Thread):
 	
 	def shutdown(self):
 		self.group.cancel()
-		if port in self.groups: del self.groups[port]
+		if self.port in self.groups: del self.groups[self.port]
 		self.socket.close()
 
 class Writer(ConnectionThread):
@@ -93,16 +120,15 @@ class Writer(ConnectionThread):
 			frame += struct.pack('>L', length)
 		
 		frame += message
-		print "sending message: %s" % message
 		bytes_sent = 0
 		try:
 			bytes_sent = self.socket.send(frame)
 		except:
-			print "Error sending message: %s" % message
+			self.cancel()
 		return bytes_sent
 	
 	def run(self):
-		self.group = self.groups[port]
+		self.group = self.groups[self.port]
 		while not self.stop_running:
 			try:
 				message = self.queue.get(True, TIMEOUT)
@@ -125,6 +151,11 @@ class Writer(ConnectionThread):
 		print "Exiting writer thread for %s" % self.id
 
 class Reader(ConnectionThread):	
+	def __init__(self, socket, address, port, groups, server):
+		self.server = server
+		
+		ConnectionThread.__init__(self, socket, address, port, groups)
+	
 	def parseWebsocketKey(self, request):
 		match = re.search(r"Sec-WebSocket-Key: (.*)\r\n", request)
 		if match:
@@ -177,14 +208,12 @@ class Reader(ConnectionThread):
 			message.append(chr(ord(char) ^ ord(mask[i % 4])))
 		message = "".join(message)
 		
-		print "message received: %s" % message
-		self.counter += 1
-		self.group.writer.send("This is response %d on port %d!" % (self.counter, self.port))	
+		self.server.onMessage(message, self.address, self.port)
 	
 	def run(self):
-		self.counter = 0
-		self.group = self.groups[port]
+		self.group = self.groups[self.port]
 		self.handshake()
+		self.server.onConnect(self.address, self.port)
 		
 		while not self.stop_running:
 			try:
@@ -199,8 +228,39 @@ class Reader(ConnectionThread):
 			else:
 				break
 		
+		self.server.onClose(self.address, self.port)
 		self.shutdown()
 		print "Exiting reader thread for %s" % self.id
+
+class Listener:
+	def __init__(self, port, server_class):
+		self.port = port
+		self.server_class = server_class
+	
+	def start(self):
+		sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+		sock.bind(('', self.port))
+		sock.listen(5)
+		print "listening on port %d..." % self.port
+
+		groups = {}	 # map of port => ConnectionGroup
+		try:
+			while True:
+				(clientsocket, address) = sock.accept()
+				(address, port) = address
+				print "Accepted connection from: %s:%s" % (address, port)
+				
+				connection = self.server_class(port, groups)
+				reader = Reader(clientsocket, address, port, groups, connection)
+				writer = Writer(clientsocket, address, port, groups)
+				group = ConnectionGroup(reader, writer)
+				groups[port] = group
+				group.start()
+		except KeyboardInterrupt:
+			pass
+			
+		for group in groups.values(): group.cancel()
 
 if __name__ == "__main__":
 	serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -217,7 +277,8 @@ if __name__ == "__main__":
 			(address, port) = address
 			print "Accepted connection from: %s:%s" % (address, port)
 			
-			reader = Reader(clientsocket, address, port, groups)
+			connection = ClientConnection(port, groups)
+			reader = Reader(clientsocket, address, port, groups, connection)
 			writer = Writer(clientsocket, address, port, groups)
 			group = ConnectionGroup(reader, writer)
 			groups[port] = group

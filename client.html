@@ -1,12 +1,12 @@
 <!DOCTYPE html> 
  <meta charset="utf-8" /> 
   <title>WebSocket Test</title>
+	<script src="https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js"></script>
     <script language="javascript" type="text/javascript"> 
 		var wsUri = "ws://localhost:8888/"; 
-		var output;
 		var interval;
+		var counter = 1;
 		function init() { 
-			output = document.getElementById("output"); 
 			testWebSocket(); 
 		}  
 		
@@ -26,9 +26,14 @@
 			}; 
 		}  
 		
+		function sendMessage() {
+			doSend("WebSocket rocks client 2 message " + counter);
+			counter++;
+		}
+		
 		function onOpen(evt) { 
-			writeToScreen("CONNECTED"); 
-			interval = window.setInterval(doSend, 0, "WebSocket rocks");
+			writeToScreen("CONNECTED");
+			interval = window.setInterval(sendMessage, 100);
 		}  
 		
 		function onClose(evt) { 
@@ -49,9 +54,7 @@
 		}  
 		
 		function writeToScreen(message) { 
-			var pre = document.createElement("p");
-			pre.style.wordWrap = "break-word"; 
-			pre.innerHTML = message; output.appendChild(pre); 
+			$("#output").prepend('<p>' + message + '</p>');
 		}  
 		
 		window.addEventListener("load", init, false);  
