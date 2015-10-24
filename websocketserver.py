@@ -87,12 +87,39 @@ class Writer(ConnectionThread):
         ConnectionThread.__init__(self, socket, address, port, groups)
     
     def send(self, message):
-        self.queue.put({'mode': 'frame', 'text': message})
+        self.queue.put({'mode': 'message', 'text': message})
     
     def sendRaw(self, message):
         self.queue.put({'mode': 'raw', 'text': message})
     
-    def _sendFrame(self, message):
+    def sendPong(self, message):
+        self.queue.put({'mode': 'pong', 'text': message})
+    
+    def sendPing(self, message="ping"):
+        self.queue.put({'mode': 'ping', 'text': message})
+    
+    def _sendFrame(self, message, fin, opcode):
+        frame = chr((fin << 7) + opcode)
+        length = len(message)
+        if length <= 125:
+            frame += struct.pack('>B', length)
+        elif length <= 2**16:
+            frame += struct.pack('>B', 126)
+            frame += struct.pack('>H', length)
+        else:
+            frame += struct.pack('>B', 127)
+            frame += struct.pack('>Q', length)
+        
+        frame += message
+        try:
+            bytes_sent = self.socket.send(frame)
+        except:
+            self.cancel()
+            return 0
+        
+        return bytes_sent
+    
+    def _sendMessage(self, message):
         parts = []
         while message:
             parts.append(message[:MAX_SEND_SIZE])
@@ -101,32 +128,21 @@ class Writer(ConnectionThread):
         bytes_sent = 0
         for i, message in enumerate(parts):
             if i == 0:
-                opcode = 0b00000001
+                opcode = 1
             else:
                 opcode = 0
             
             if i == len(parts) - 1:
-                fin = 0b10000000
+                fin = 1
             else: 
                 fin = 0
-                
-            frame = chr(fin + opcode)
-            length = len(message)
-            if length <= 125:
-                frame += struct.pack('>B', length)
-            elif length <= 2**16:
-                frame += struct.pack('>B', 126)
-                frame += struct.pack('>H', length)
-            else:
-                frame += struct.pack('>B', 127)
-                frame += struct.pack('>Q', length)
             
-            frame += message
-            try:
-                bytes_sent += self.socket.send(frame)
-            except:
+            sent = self._sendFrame(message, fin, opcode)
+            if sent == 0:
                 self.cancel()
                 return
+            bytes_sent += sent
+            
         return bytes_sent
     
     def run(self):
@@ -139,9 +155,12 @@ class Writer(ConnectionThread):
             except:
                 break
             
-            if message['mode'] == 'frame':
-                sent_bytes = self._sendFrame(message['text'])
-                if sent_bytes == 0: break
+            if message['mode'] == 'message':
+                if not self._sendMessage(message['text']): break
+            elif message['mode'] == 'ping':
+                if not self._sendFrame(message['text'], 1, 9): break
+            elif message['mode'] == 'pong':
+                if not self._sendFrame(message['text'], 1, 0xA): break
             else:
                 try:
                     self.socket.send(message['text'])
@@ -210,7 +229,7 @@ class Reader(ConnectionThread):
             error = "Unmasked message received. Disconnecting."
         elif opcode == 8:
             error = "Disconnect opcode received (8). Closing connection."
-        elif opcode not in (0, 1):
+        elif opcode not in (0, 1, 9, 0xA):
             error = "Invalid opcode %d received (binary data is not yet supported). Disconnecting." % opcode
         
         if error:
@@ -231,14 +250,21 @@ class Reader(ConnectionThread):
             message.append(chr(ord(char) ^ ord(mask[i % 4])))
         message = "".join(message)
         
-        self.payloads.append(message)
-        if fin:
-            self.server.onMessage("".join(self.payloads), self.address, self.port)
-            self.payloads = []
-        
-        if len(self.payloads) > MAX_MESSAGE_PARTS:
-            print "Max number of message parts (%d) exceeded. Closing connection." % MAX_MESSAGE_PARTS
-            self.socket.close()
+        if opcode == 0xA:
+            # pong; ignore
+            return
+        elif opcode == 9:
+            # Ping
+            self.group.writer.sendPong(message)
+        else:
+            self.payloads.append(message)
+            if fin:
+                self.server.onMessage("".join(self.payloads), self.address, self.port)
+                self.payloads = []
+            
+            if len(self.payloads) > MAX_MESSAGE_PARTS:
+                print "Max number of message parts (%d) exceeded. Closing connection." % MAX_MESSAGE_PARTS
+                self.socket.close()
     
     def run(self):
         self.group = self.groups[self.port]
