@@ -316,31 +316,4 @@ class Listener:
         except KeyboardInterrupt:
             pass
             
-        for group in groups.values(): group.cancel()
-
-if __name__ == "__main__":
-    serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    serversocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
-    serversocket.bind(('', PORT))
-    serversocket.listen(5)
-    print "listening on port %d..." % PORT
-
-    groups = {}     # map of port => ConnectionGroup
-    try:
-        while True:
-            (clientsocket, address) = serversocket.accept()
-            (address, port) = address
-            print "Accepted connection from: %s:%s" % (address, port)
-            
-            connection = ClientConnection(port, groups)
-            reader = Reader(clientsocket, address, port, groups, connection)
-            writer = Writer(clientsocket, address, port, groups)
-            group = ConnectionGroup(reader, writer)
-            groups[port] = group
-            group.start()
-    except KeyboardInterrupt:
-        pass
-        
-    for group in groups.values(): group.cancel()
-    
+        for group in groups.values(): group.cancel()    
