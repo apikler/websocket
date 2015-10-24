@@ -27,13 +27,18 @@
 		}  
 		
 		function sendMessage() {
-			doSend("WebSocket rocks client 2 message " + counter);
+			message = "";
+			for (var i = 0; i < 100000; i++) {
+				message += "abcdefghijklmnopqrstuvwxyz ";
+			}
+			doSend(message);
 			counter++;
 		}
 		
 		function onOpen(evt) { 
 			writeToScreen("CONNECTED");
-			interval = window.setInterval(sendMessage, 100);
+			sendMessage();
+			// interval = window.setInterval(sendMessage, 5000);
 		}  
 		
 		function onClose(evt) { 

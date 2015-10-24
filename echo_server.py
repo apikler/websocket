@@ -7,7 +7,8 @@ class EchoServer(Server):
         print "Connection from %s:%d" % (address, port)
     
     def onMessage(self, message, address, port):
-        print "Message from %d: %s" % (port, message)
+        print "message received of length %d" % len(message)
+        # print "Message from %d: %s" % (port, message)
         self.sendToOthers(message, port)
     
     def onClose(self, address, port):

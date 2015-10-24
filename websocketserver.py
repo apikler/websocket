@@ -15,22 +15,6 @@ RESPONSE_HEADERS = (
 )
 TIMEOUT = 1.0
 
-def stringToBits(string):
-    bits = 0
-    for char in string:
-        bits << 8
-        bits += ord(char)
-    return bits
-
-def bit(string, index):
-    data = stringToBits(string) 
-    return (data & (1 << index)) >> index
-
-def bits(string, start, end):
-    data = stringToBits(string)
-    diff = end - start + 1
-    mask = ((1 << diff) - 1) << start
-    return (data & mask) >> start
 
 class Server:
     def __init__(self, port, groups):
@@ -153,8 +137,26 @@ class Writer(ConnectionThread):
 class Reader(ConnectionThread):    
     def __init__(self, socket, address, port, groups, server):
         self.server = server
+        self.payloads = []
         
         ConnectionThread.__init__(self, socket, address, port, groups)
+    
+    def stringToBits(self, string):
+        bits = 0
+        for char in string:
+            bits << 8
+            bits += ord(char)
+        return bits
+
+    def bit(self, string, index):
+        data = self.stringToBits(string) 
+        return (data & (1 << index)) >> index
+
+    def bits(self, string, start, end):
+        data = self.stringToBits(string)
+        diff = end - start + 1
+        mask = ((1 << diff) - 1) << start
+        return (data & mask) >> start
     
     def parseWebsocketKey(self, request):
         match = re.search(r"Sec-WebSocket-Key: (.*)\r\n", request)
@@ -181,34 +183,40 @@ class Reader(ConnectionThread):
         self.group.writer.sendRaw(response)
     
     def processFrame(self, frame_info):
-        #print "frame length: %d" % len(frame_info)
-        #print "frame from %s: %s" % (self.id, frame_info)
-        #print "FIN is: %d" % bit(frame_info[0], 7)
-        #print "MASK is: %d" % bit(frame_info[1], 7)
-        opcode = bits(frame_info[0], 0, 3)
-        # print "opcode is: %d" % opcode
-        payload_length = bits(frame_info[1], 0, 6)
+        fin = self.bit(frame_info[0], 7)
+        masked = self.bit(frame_info[1], 7)
+        opcode = self.bits(frame_info[0], 0, 3)
         
-        if opcode == 8:
+        error = ""
+        if not masked:
+            error = "Unmasked message received. Disconnecting."
+        elif opcode == 8:
+            error = "Disconnect opcode received (8). Closing connection."
+        elif opcode not in (0, 1):
+            error = "Invalid opcode %d received (binary data is not yet supported). Disconnecting." % opcode
+        
+        if error:
+            print error
             self.socket.close()
             return
         
+        payload_length = self.bits(frame_info[1], 0, 6)
         if payload_length == 126:
-            payload_length = struct.unpack('>H', self.socket.recv(2))
+            payload_length = struct.unpack('>H', self.socket.recv(2))[0]
         elif payload_length == 127:
-            payload_length = struct.unpack('>L', self.socket.recv(8))
-        
-        # print "payload len is: %d" % payload_length
-        
+            payload_length = struct.unpack('>Q', self.socket.recv(8))[0]
+                
         mask = self.socket.recv(4)
-        # print "mask is: %s" % mask
         encoded = self.socket.recv(payload_length)
         message = []
         for i, char in enumerate(encoded):
             message.append(chr(ord(char) ^ ord(mask[i % 4])))
         message = "".join(message)
         
-        self.server.onMessage(message, self.address, self.port)
+        self.payloads.append(message)
+        if fin:
+            self.server.onMessage("".join(self.payloads), self.address, self.port)
+            self.payloads = []
     
     def run(self):
         self.group = self.groups[self.port]
