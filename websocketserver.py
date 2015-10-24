@@ -186,7 +186,7 @@ class Reader(ConnectionThread):
     def stringToBits(self, string):
         bits = 0
         for char in string:
-            bits << 8
+            bits <<= 8
             bits += ord(char)
         return bits
 
