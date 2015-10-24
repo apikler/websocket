@@ -20,8 +20,11 @@ MAX_CONNECTIONS_PER_IP = 3
 
 
 class Server:
-    def __init__(self, port, groups):
+    def __init__(self, groups):
         self.GROUPS = groups
+    
+    def onStart(self, *args, **kwargs):
+        pass
     
     def onConnect(self, address, port):
         pass
@@ -216,9 +219,7 @@ class Reader(ConnectionThread):
     
     def handshake(self):
         request = self.socket.recv(1024)
-        print "received: \n" + request
         response = self.handshakeResponse(request)
-        print "response: \n" + response
         self.group.writer.sendRaw(response)
     
     def processFrame(self, frame_info):
@@ -301,7 +302,7 @@ class Listener:
             if group.address == address: count += 1
         return count
     
-    def start(self):
+    def start(self, *args, **kwargs):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(('', self.port))
@@ -309,6 +310,8 @@ class Listener:
         print "listening on port %d..." % self.port
 
         groups = {}     # map of port => ConnectionGroup
+        server = self.server_class(groups)
+        server.onStart(args, kwargs)
         try:
             while True:
                 (clientsocket, address) = sock.accept()
@@ -319,8 +322,7 @@ class Listener:
                 else:
                     print "Accepted connection from: %s:%s" % (address, port)
                     
-                    connection = self.server_class(port, groups)
-                    reader = Reader(clientsocket, address, port, groups, connection)
+                    reader = Reader(clientsocket, address, port, groups, server)
                     writer = Writer(clientsocket, address, port, groups)
                     group = ConnectionGroup(address, reader, writer)
                     groups[port] = group
