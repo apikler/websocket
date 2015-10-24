@@ -16,6 +16,7 @@ RESPONSE_HEADERS = (
 TIMEOUT = 1.0
 MAX_MESSAGE_PARTS = 1000
 MAX_SEND_SIZE = 2**20
+MAX_CONNECTIONS_PER_IP = 3
 
 
 class Server:
@@ -47,7 +48,8 @@ class Server:
                 self.GROUPS[other_port].writer.send(message)
 
 class ConnectionGroup:
-    def __init__(self, reader, writer):
+    def __init__(self, address, reader, writer):
+        self.address = address
         self.reader = reader
         self.writer = writer
     
@@ -293,6 +295,12 @@ class Listener:
         self.port = port
         self.server_class = server_class
     
+    def connectionCount(self, groups, address):
+        count = 0
+        for group in groups.values():
+            if group.address == address: count += 1
+        return count
+    
     def start(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -305,14 +313,18 @@ class Listener:
             while True:
                 (clientsocket, address) = sock.accept()
                 (address, port) = address
-                print "Accepted connection from: %s:%s" % (address, port)
-                
-                connection = self.server_class(port, groups)
-                reader = Reader(clientsocket, address, port, groups, connection)
-                writer = Writer(clientsocket, address, port, groups)
-                group = ConnectionGroup(reader, writer)
-                groups[port] = group
-                group.start()
+                if self.connectionCount(groups, address) >= MAX_CONNECTIONS_PER_IP:
+                    print "Refusing connection from: %s:%s" % (address, port)
+                    clientsocket.close()
+                else:
+                    print "Accepted connection from: %s:%s" % (address, port)
+                    
+                    connection = self.server_class(port, groups)
+                    reader = Reader(clientsocket, address, port, groups, connection)
+                    writer = Writer(clientsocket, address, port, groups)
+                    group = ConnectionGroup(address, reader, writer)
+                    groups[port] = group
+                    group.start()
         except KeyboardInterrupt:
             pass
             
