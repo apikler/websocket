@@ -9,7 +9,10 @@ class EchoServer(Server):
     def onMessage(self, message, address, port):
         print "message received of length %d" % len(message)
         # print "Message from %d: %s" % (port, message)
-        self.sendToOthers(message, port)
+        message = []
+        for i in range(2**24 + 2):
+            message.append("abc")
+        self.send("".join(message), port)
     
     def onClose(self, address, port):
         print "Disconnected: %s:%d" % (address, port)

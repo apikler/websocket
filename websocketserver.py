@@ -14,6 +14,8 @@ RESPONSE_HEADERS = (
     "Sec-WebSocket-Accept: %s",
 )
 TIMEOUT = 1.0
+MAX_MESSAGE_PARTS = 1000
+MAX_SEND_SIZE = 2**20
 
 
 class Server:
@@ -91,24 +93,40 @@ class Writer(ConnectionThread):
         self.queue.put({'mode': 'raw', 'text': message})
     
     def _sendFrame(self, message):
-        frame = chr(0b10000001)
+        parts = []
+        while message:
+            parts.append(message[:MAX_SEND_SIZE])
+            message = message[MAX_SEND_SIZE:]
         
-        length = len(message)
-        if length <= 125:
-            frame += struct.pack('>B', length)
-        elif length <= 2**16:
-            frame += struct.pack('>B', 126)
-            frame += struct.pack('>H', length)
-        else:
-            frame += struct.pack('>B', 127)
-            frame += struct.pack('>L', length)
-        
-        frame += message
         bytes_sent = 0
-        try:
-            bytes_sent = self.socket.send(frame)
-        except:
-            self.cancel()
+        for i, message in enumerate(parts):
+            if i == 0:
+                opcode = 0b00000001
+            else:
+                opcode = 0
+            
+            if i == len(parts) - 1:
+                fin = 0b10000000
+            else: 
+                fin = 0
+                
+            frame = chr(fin + opcode)
+            length = len(message)
+            if length <= 125:
+                frame += struct.pack('>B', length)
+            elif length <= 2**16:
+                frame += struct.pack('>B', 126)
+                frame += struct.pack('>H', length)
+            else:
+                frame += struct.pack('>B', 127)
+                frame += struct.pack('>Q', length)
+            
+            frame += message
+            try:
+                bytes_sent += self.socket.send(frame)
+            except:
+                self.cancel()
+                return
         return bytes_sent
     
     def run(self):
@@ -217,6 +235,10 @@ class Reader(ConnectionThread):
         if fin:
             self.server.onMessage("".join(self.payloads), self.address, self.port)
             self.payloads = []
+        
+        if len(self.payloads) > MAX_MESSAGE_PARTS:
+            print "Max number of message parts (%d) exceeded. Closing connection." % MAX_MESSAGE_PARTS
+            self.socket.close()
     
     def run(self):
         self.group = self.groups[self.port]
