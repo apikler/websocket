@@ -35,7 +35,7 @@
 		function onOpen(evt) { 
 			writeToScreen("CONNECTED");
 			sendMessage();
-			// interval = window.setInterval(sendMessage, 5000);
+			interval = window.setInterval(sendMessage, 1000);
 		}  
 		
 		function onClose(evt) { 

@@ -177,8 +177,9 @@ class Writer(ConnectionThread):
         print "Exiting writer thread for %s" % self.id
 
 class Reader(ConnectionThread):    
-    def __init__(self, socket, address, port, groups, server):
+    def __init__(self, socket, address, port, groups, server, worker):
         self.server = server
+        self.worker = worker
         self.payloads = []
         
         ConnectionThread.__init__(self, socket, address, port, groups)
@@ -262,7 +263,10 @@ class Reader(ConnectionThread):
         else:
             self.payloads.append(message)
             if fin:
-                self.server.onMessage("".join(self.payloads), self.address, self.port)
+                if self.worker:
+                    self.worker.put(self.server.onMessage, "".join(self.payloads), self.address, self.port)
+                else:
+                    self.server.onMessage("".join(self.payloads), self.address, self.port)
                 self.payloads = []
             
             if len(self.payloads) > MAX_MESSAGE_PARTS:
@@ -272,7 +276,10 @@ class Reader(ConnectionThread):
     def run(self):
         self.group = self.groups[self.port]
         self.handshake()
-        self.server.onConnect(self.address, self.port)
+        if self.worker:
+            self.worker.put(self.server.onConnect, self.address, self.port)
+        else:
+            self.server.onConnect(self.address, self.port)
         
         while not self.stop_running:
             try:
@@ -287,14 +294,47 @@ class Reader(ConnectionThread):
             else:
                 break
         
-        self.server.onClose(self.address, self.port)
+        if self.worker:
+            self.worker.put(self.server.onClose, self.address, self.port)
+        else:
+            self.server.onClose(self.address, self.port)
         self.shutdown()
         print "Exiting reader thread for %s" % self.id
 
+class Worker(threading.Thread):
+    def __init__(self):
+        self.queue = Queue.Queue()
+        self.stop_running = False
+        
+        threading.Thread.__init__(self)
+    
+    def put(self, function, *args, **kwargs):
+        self.queue.put({'function': function, 'args': args, 'kwargs': kwargs})
+    
+    def cancel(self):
+        self.stop_running = True
+    
+    def run(self):
+        print "Running worker thread"
+        while not self.stop_running:
+            try:
+                params = self.queue.get(True, TIMEOUT)
+                params['function'](*params['args'], **params['kwargs'])
+            except Queue.Empty:
+                continue
+            except:
+                break
+        
+        print "Shutting down worker thread"
+
 class Listener:
-    def __init__(self, port, server_class):
+    def __init__(self, port, server_class, thread_mode="single"):
         self.port = port
         self.server_class = server_class
+        
+        if thread_mode not in ('single', 'multi'):
+            raise ValueError('Thread mode must be "multi" or "single"')
+        self.thread_mode = thread_mode
     
     def connectionCount(self, groups, address):
         count = 0
@@ -312,6 +352,12 @@ class Listener:
         groups = {}     # map of port => ConnectionGroup
         server = self.server_class(groups)
         server.onStart(args, kwargs)
+        
+        worker = None
+        if self.thread_mode == 'single':
+            worker = Worker()
+            worker.start()
+            
         try:
             while True:
                 (clientsocket, address) = sock.accept()
@@ -322,12 +368,13 @@ class Listener:
                 else:
                     print "Accepted connection from: %s:%s" % (address, port)
                     
-                    reader = Reader(clientsocket, address, port, groups, server)
+                    reader = Reader(clientsocket, address, port, groups, server, worker)
                     writer = Writer(clientsocket, address, port, groups)
                     group = ConnectionGroup(address, reader, writer)
                     groups[port] = group
                     group.start()
         except KeyboardInterrupt:
             pass
-            
+        
+        if worker: worker.cancel()
         for group in groups.values(): group.cancel()    
