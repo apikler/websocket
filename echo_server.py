@@ -18,5 +18,5 @@ class EchoServer(Server):
         print "Disconnected: %s:%d" % (address, port)
 
 if __name__ == "__main__":
-    listener = Listener(PORT, EchoServer, thread_mode="multi")
+    listener = Listener(PORT, EchoServer)
     listener.start()

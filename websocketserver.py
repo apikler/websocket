@@ -5,6 +5,8 @@ import socket
 import threading
 import struct
 import Queue
+import sys
+import traceback
 
 MAGIC_STRING = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 RESPONSE_HEADERS = (
@@ -18,6 +20,16 @@ MAX_MESSAGE_PARTS = 1000
 MAX_SEND_SIZE = 2**20
 MAX_CONNECTIONS_PER_IP = 3
 
+def _safeCall(cancelable, function, *args, **kwargs):
+    try:
+        function(*args, **kwargs)
+    except Exception:
+        cancelable.cancel()
+        
+        (exc_type, exc_value, exc_traceback) = sys.exc_info()
+        traceback.print_exception(exc_type, exc_value, exc_traceback,
+                                  file=sys.stderr)
+        
 
 class Server:
     def __init__(self, groups):
@@ -179,8 +191,12 @@ class Writer(ConnectionThread):
 class Reader(ConnectionThread):    
     def __init__(self, socket, address, port, groups, server, worker):
         self.server = server
-        self.worker = worker
         self.payloads = []
+        
+        if worker:
+            self.action_method = worker.put
+        else:
+            self.action_method = _safeCall
         
         ConnectionThread.__init__(self, socket, address, port, groups)
     
@@ -246,7 +262,7 @@ class Reader(ConnectionThread):
             payload_length = struct.unpack('>H', self.socket.recv(2))[0]
         elif payload_length == 127:
             payload_length = struct.unpack('>Q', self.socket.recv(8))[0]
-                
+        
         mask = self.socket.recv(4)
         encoded = self.socket.recv(payload_length)
         message = []
@@ -263,10 +279,8 @@ class Reader(ConnectionThread):
         else:
             self.payloads.append(message)
             if fin:
-                if self.worker:
-                    self.worker.put(self.server.onMessage, "".join(self.payloads), self.address, self.port)
-                else:
-                    self.server.onMessage("".join(self.payloads), self.address, self.port)
+                self.action_method(self, self.server.onMessage,
+                                   "".join(self.payloads), self.address, self.port)
                 self.payloads = []
             
             if len(self.payloads) > MAX_MESSAGE_PARTS:
@@ -276,10 +290,7 @@ class Reader(ConnectionThread):
     def run(self):
         self.group = self.groups[self.port]
         self.handshake()
-        if self.worker:
-            self.worker.put(self.server.onConnect, self.address, self.port)
-        else:
-            self.server.onConnect(self.address, self.port)
+        self.action_method(self, self.server.onConnect, self.address, self.port)
         
         while not self.stop_running:
             try:
@@ -294,10 +305,7 @@ class Reader(ConnectionThread):
             else:
                 break
         
-        if self.worker:
-            self.worker.put(self.server.onClose, self.address, self.port)
-        else:
-            self.server.onClose(self.address, self.port)
+        self.action_method(self, self.server.onClose, self.address, self.port)
         self.shutdown()
         print "Exiting reader thread for %s" % self.id
 
@@ -308,8 +316,9 @@ class Worker(threading.Thread):
         
         threading.Thread.__init__(self)
     
-    def put(self, function, *args, **kwargs):
-        self.queue.put({'function': function, 'args': args, 'kwargs': kwargs})
+    def put(self, cancelable, function, *args, **kwargs):
+        self.queue.put({'cancelable': cancelable, 'function': function, 
+                        'args': args, 'kwargs': kwargs})
     
     def cancel(self):
         self.stop_running = True
@@ -319,11 +328,11 @@ class Worker(threading.Thread):
         while not self.stop_running:
             try:
                 params = self.queue.get(True, TIMEOUT)
-                params['function'](*params['args'], **params['kwargs'])
             except Queue.Empty:
                 continue
-            except:
-                break
+
+            _safeCall(params['cancelable'], params['function'],
+                      *params['args'], **params['kwargs'])
         
         print "Shutting down worker thread"
 
