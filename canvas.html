@@ -12,7 +12,7 @@
 
 <script type="text/javascript">
 var is_mouse_down = false;
-var last_coords = null;
+var client_coords = {};
 var websocket = null;
 
 function context() {
@@ -40,26 +40,39 @@ function drawDots(x1, y1, x2, y2) {
     }
 }
 
+function processDown(canvas_coords, client) {
+    dot(canvas_coords[0], canvas_coords[1]);
+    client_coords[client] = canvas_coords;
+}
+
+function processUp(canvas_coords, client) {
+    delete client_coords[client];
+}
+
+function processMove(canvas_coords, client) {
+    if (client in client_coords) {
+        var last_coords = client_coords[client];
+        drawDots(last_coords[0], last_coords[1], canvas_coords[0], canvas_coords[1]);
+        client_coords[client] = canvas_coords;
+        return true;
+    }
+    
+    return false;
+}
+
 function mouseDown(event) {
-    last_coords = canvasCoords(event);
-    dot(last_coords[0], last_coords[1]);
-    is_mouse_down = true;
-    sendCoords(event, "down");
+    processDown(canvasCoords(event), "user");
+    sendCoords(canvasCoords(event), "down");
 }
 
 function mouseUp(event) {
-    is_mouse_down = false;
-    offset = null;
-    sendCoords(event, "up");
+    processUp(canvasCoords(event), "user");
+    sendCoords(canvasCoords(event), "up");
 }
 
 function mouseMove(event) {
-    if (is_mouse_down) {
-        var new_coords = canvasCoords(event);
-        drawDots(last_coords[0], last_coords[1], new_coords[0], new_coords[1]);
-        
-        last_coords = new_coords;
-        sendCoords(event, "move");
+    if (processMove(canvasCoords(event), "user")) {
+        sendCoords(canvasCoords(event), "move");
     }
 }
 
@@ -70,17 +83,37 @@ function canvasCoords(event) {
 
 function coordsToCartesian(x, y) {
     var new_x = x - $("#canvas").attr("width") / 2;
-    var new_y = -y + $("#canvas").attr("height") / 2;
+    var new_y = $("#canvas").attr("height") / 2 - y;
     return [new_x, new_y];
 }
 
-function sendCoords(event, event_name) {
-    var coords = canvasCoords(event);
+function coordsToCanvas(x, y) {
+    var new_x = x + $("#canvas").attr("width") / 2;
+    var new_y = $("#canvas").attr("height") / 2 - y;
+    return [new_x, new_y];
+}
+
+function sendCoords(canvas_coords, event_name) {
     var obj = {
-        coords: coordsToCartesian(coords[0], coords[1]),
+        coords: coordsToCartesian(canvas_coords[0], canvas_coords[1]),
         event: event_name
     };
     websocket.send(JSON.stringify(obj));
+}
+
+function onMessage(event) {
+    var message = JSON.parse(event.data);
+    var canvas_coords = coordsToCanvas(message.coords[0], message.coords[1]);
+    var client = message.client;
+    if (message.event == 'up') {
+        processUp(canvas_coords, client);
+    }
+    else if (message.event == 'down') {
+        processDown(canvas_coords, client);
+    }
+    else if (message.event == 'move') {
+        processMove(canvas_coords, client);
+    }
 }
 
 function resizeCanvas() {
@@ -101,6 +134,7 @@ $(function() {
         $("#canvas").attr("width", 0);
         $("#canvas").attr("height", 0);
     };
+    websocket.onmessage = onMessage;
 });
 
 
