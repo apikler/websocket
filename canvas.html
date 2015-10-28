@@ -126,7 +126,7 @@ $(window).bind("resize", function(){
 });
 
 $(function() {
-    websocket = new WebSocket("ws://localhost:8888/");
+    websocket = new WebSocket("ws://" + window.location.hostname + ":8888/");
     websocket.onopen = function(event) {
         resizeCanvas();
     };

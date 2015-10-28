@@ -8,16 +8,16 @@ class EchoServer(Server):
     def onConnect(self, address, port):
         print "Connection from %s:%d" % (address, port)
     
-    def onMessage(self, message, address, port):
+    def onMessage(self, json_message, address, port):
         try:
-            message = json.loads(message)
+            message = json.loads(json_message)
             coords = message['coords']
             x1 = float(coords[0])
             x2 = float(coords[1])
             if message['event'] not in ('down', 'up', 'move'):
                 raise ValueError('Invalid event %s' % message['event'])
-        except KeyError, ValueError:
-            print "Invalid message!"
+        except (KeyError, ValueError):
+            print "Invalid message: " + json_message
             return
         
         message['client'] = port
